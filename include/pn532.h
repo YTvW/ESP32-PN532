@@ -1,4 +1,5 @@
 // PN532 functions
+// Copyright © 2019 Adrian Kennard, Andrews & Arnold Ltd. See LICENCE file for details. GPL 3.0
 
 #ifndef	PN532_H
 #define PN532_H
