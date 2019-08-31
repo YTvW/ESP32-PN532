@@ -68,7 +68,7 @@ typedef struct pn532_s pn532_t;
 
 // Functions
 
-pn532_t *pn532_init (int uart, int tx, int rx, uint8_t p3);     // Init PN532 (P3 is port 3 output bits in use)
+pn532_t *pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t p3);    // Init PN532 (P3 is port 3 output bits in use)
 void *pn532_end (pn532_t * p);
 
 pn532_err_t pn532_lasterr (pn532_t *);
@@ -85,8 +85,8 @@ uint8_t *pn532_ats (pn532_t *); // Get ATS (first byte is len of following - not
 int pn532_dx (void *, unsigned int len, uint8_t * data, unsigned int max, const char **errstr);
 
 // Higher level useful PN532 functions
-int pn532_write_GPIO (pn532_t * p, uint8_t value);  // (P72/P71 in top bits, P35-30 in rest)
-int pn532_read_GPIO (pn532_t * p); // P72/P71 in top bits, P35-30 in rest)
+int pn532_write_GPIO (pn532_t * p, uint8_t value);      // (P72/P71 in top bits, P35-30 in rest)
+int pn532_read_GPIO (pn532_t * p);      // P72/P71 in top bits, P35-30 in rest)
 int pn532_ILPT_Send (pn532_t * p);      // Async InListPassiveTarget - used pn532_ready to check when to do pn532_Cards
 int pn532_Cards (pn532_t * p);  // How many cards present (does pn532_ILPT_Send if needed)
 int pn532_Present (pn532_t * p);        // Check if present still

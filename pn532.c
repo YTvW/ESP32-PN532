@@ -13,9 +13,7 @@ static const char TAG[] = "PN532";
 struct pn532_s
 {
    uint8_t uart;                // Which UART
-   uint8_t tx;                  // Tx GPIO
-   uint8_t rx;                  // Rx GPIO
-   uint8_t pending;             // Pending response
+   volatile uint8_t pending;    // Pending response
    uint8_t lasterr;             // Last error (obviously not for PN532_ERR_NULL)
    uint8_t cards;               // Cards present (0, 1 or 2)
    uint8_t tg;                  // First card target id (normally 1)
@@ -23,6 +21,7 @@ struct pn532_s
    uint8_t sel_res;             // From InListPassiveTarget
    uint8_t nfcid[11];           // First card ID last seen (starts with len)
    uint8_t ats[30];             // First card ATS last seen (starts with len)
+   SemaphoreHandle_t mutex;     // DX mutex 
 };
 
 // Data
@@ -122,15 +121,18 @@ pn532_end (pn532_t * p)
 }
 
 pn532_t *
-pn532_init (int uart, int tx, int rx, uint8_t outputs)
+pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
 {                               // Init PN532
+   if (uart < 0 || tx < 0 || rx < 0 || tx == rx)
+      return NULL;
+   if (!GPIO_IS_VALID_OUTPUT_GPIO (tx) || !GPIO_IS_VALID_GPIO (rx))
+      return NULL;
    pn532_t *p = malloc (sizeof (*p));
    if (!p)
       return p;
    memset (p, 0, sizeof (*p));
    p->uart = uart;
-   p->tx = tx;
-   p->rx = rx;
+   p->mutex = xSemaphoreCreateMutex ();
    // Init UART
    uart_config_t uart_config = {
       .baud_rate = 115200,
@@ -140,8 +142,10 @@ pn532_init (int uart, int tx, int rx, uint8_t outputs)
       .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
    };
    esp_err_t err;
-   if ((err = uart_param_config (uart, &uart_config)) || (err = uart_set_pin (uart, tx, rx, -1, -1))
-       || (err = uart_driver_install (uart, 280, 0, 0, NULL, 0)) || (err = uart_set_mode (uart, UART_MODE_UART)))
+   if ((err = uart_param_config (uart, &uart_config))   //
+       || (err = uart_set_pin (uart, tx, rx, -1, -1))   //
+       || (err = uart_driver_install (uart, 280, 0, 0, NULL, 0))        //
+      )
    {
       ESP_LOGE (TAG, "UART fail %s", esp_err_to_name (err));
       free (p);
@@ -213,7 +217,7 @@ pn532_init (int uart, int tx, int rx, uint8_t outputs)
    buf[n++] = 0x00;             // RFU
    buf[n++] = 0x0B;             // Default (102.4 ms)
    buf[n++] = 0x0A;             // Default is 0x0A (51.2 ms)
-   if (pn532_tx (p, 0x32, 0, NULL, n, buf) || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
+   if (pn532_tx (p, 0x32, 0, NULL, n, buf) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
       return pn532_end (p);
    return p;
 }
@@ -245,10 +249,8 @@ pn532_nfcid (pn532_t * p, char text[21])
 
 // Low level access functions
 int
-pn532_tx (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, uint8_t * data2)
+pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, uint8_t * data2)
 {                               // Send data to PN532
-   if (!p)
-      return -PN532_ERR_NULL;
    if (p->pending)
       return -(p->lasterr = PN532_ERR_CMDPENDING);
    uint8_t buf[20],
@@ -304,16 +306,23 @@ pn532_tx (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, uint8_t
    if (buf[0] || buf[1] != 0xFF)
       return -(p->lasterr = PN532_ERR_BADACK);  // Bad
    p->pending = cmd + 1;
-   return 0;                    // OK
+   return len1 + len2;
 }
 
 int
-pn532_rx (pn532_t * p, int max1, uint8_t * data1, int max2, uint8_t * data2)
-{                               // Recv data from PN532
+pn532_tx (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, uint8_t * data2)
+{                               // Send data to PN532
    if (!p)
       return -PN532_ERR_NULL;
-   if (!p->pending)
-      return -(p->lasterr = PN532_ERR_NOTPENDING);
+   xSemaphoreTake (p->mutex, portMAX_DELAY);
+   int l = pn532_tx_mutex (p, cmd, len1, data1, len2, data2);
+   if (!p->pending)xSemaphoreGive (p->mutex);
+   return l;
+}
+
+int
+pn532_rx_mutex (pn532_t * p, int max1, uint8_t * data1, int max2, uint8_t * data2)
+{                               // Recv data from PN532
    uint8_t pending = p->pending;
    p->pending = 0;
    int l = uart_preamble (p, 100);
@@ -392,6 +401,18 @@ pn532_rx (pn532_t * p, int max1, uint8_t * data1, int max2, uint8_t * data2)
 }
 
 int
+pn532_rx (pn532_t * p, int max1, uint8_t * data1, int max2, uint8_t * data2)
+{                               // Recv data from PN532
+   if (!p)
+      return -PN532_ERR_NULL;
+   if (!p->pending)
+      return -(p->lasterr = PN532_ERR_NOTPENDING);
+   int l = pn532_rx_mutex (p, max1, data1, max2, data2);
+   xSemaphoreGive (p->mutex);
+   return l;
+}
+
+int
 pn532_ready (pn532_t * p)
 {
    if (!p)
@@ -423,7 +444,7 @@ pn532_dx (void *pv, unsigned int len, uint8_t * data, unsigned int max, const ch
       if (!l)
          l = -PN532_ERR_SHORT;
       else if (l >= 1 && status)
-         return l = -PN532_ERR_STATUS;
+         l = -PN532_ERR_STATUS;
    }
    if (l < 0)
    {
@@ -455,18 +476,6 @@ pn532_Present (pn532_t * p)
 {
    if (!p)
       return -PN532_ERR_NULL;
-#if 0	// Ideally this get status would tell us the card has gone, sadly it does not
-   uint8_t buf[100];
-   int l = pn532_tx (p, 0x04, 0, NULL, 0, NULL);
-   if (l < 0)
-      return l;
-   l = pn532_rx (p, 0, NULL, sizeof (buf), buf);
-   if (l < 0)
-      return l;
-   if (l < 3)
-      return -(p->lasterr = PN532_ERR_SHORT);
-   return buf[2];               // Number of targets
-#else
    uint8_t buf[1];
    if (!p->pending && p->cards && *p->ats && (p->ats[1] == 0x75 // DESFire
                                               || p->ats[1] == 0x78      // ISO
@@ -474,9 +483,8 @@ pn532_Present (pn532_t * p)
    {                            // We have cards, check in field still
       buf[0] = 6;               // Test 6 Attention Request Test or ISO/IEC14443-4 card presence detection
       int l = pn532_tx (p, 0x00, 1, buf, 0, NULL);
-      if (l < 0)
-         return l;
-      l = pn532_rx (p, 0, NULL, sizeof (buf), buf);
+      if (l >= 0)
+         l = pn532_rx (p, 0, NULL, sizeof (buf), buf);
       if (l < 0)
          return l;
       if (l < 1)
@@ -485,7 +493,6 @@ pn532_Present (pn532_t * p)
          return p->cards;       // Still in field
    }
    return pn532_Cards (p);      // Look for card - older MIFARE need re-doing to see if present still
-#endif
 }
 
 int
@@ -497,9 +504,9 @@ pn532_write_GPIO (pn532_t * p, uint8_t value)
    buf[0] = 0x80 | (value & 0x3F);
    buf[1] = 0x80 | ((value >> 5) & 0x06);
    int l = pn532_tx (p, 0x0E, 2, buf, 0, NULL);
-   if (l < 0)
-      return l;
-   return pn532_rx (p, 0, NULL, sizeof (buf), buf);
+   if (l >= 0)
+      l = pn532_rx (p, 0, NULL, sizeof (buf), buf);
+   return l;
 }
 
 int
@@ -509,9 +516,8 @@ pn532_read_GPIO (pn532_t * p)
       return -PN532_ERR_NULL;
    uint8_t buf[3];
    int l = pn532_tx (p, 0x0C, 0, NULL, 0, NULL);
-   if (l < 0)
-      return l;
-   l = pn532_rx (p, 0, NULL, sizeof (buf), buf);
+   if (l >= 0)
+      l = pn532_rx (p, 0, NULL, sizeof (buf), buf);
    if (l < 0)
       return l;
    if (l < 3)
