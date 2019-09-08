@@ -316,7 +316,8 @@ pn532_tx (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, uint8_t
       return -PN532_ERR_NULL;
    xSemaphoreTake (p->mutex, portMAX_DELAY);
    int l = pn532_tx_mutex (p, cmd, len1, data1, len2, data2);
-   if (!p->pending)xSemaphoreGive (p->mutex);
+   if (!p->pending)
+      xSemaphoreGive (p->mutex);
    return l;
 }
 
@@ -444,7 +445,7 @@ pn532_dx (void *pv, unsigned int len, uint8_t * data, unsigned int max, const ch
       if (!l)
          l = -PN532_ERR_SHORT;
       else if (l >= 1 && status)
-         l = -PN532_ERR_STATUS;
+         l = -PN532_ERR_STATUS - status;
    }
    if (l < 0)
    {
