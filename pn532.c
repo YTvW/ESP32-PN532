@@ -479,7 +479,7 @@ pn532_Present (pn532_t * p)
       return -PN532_ERR_NULL;
    uint8_t buf[1];
    if (!p->pending && p->cards && *p->ats && (p->ats[1] == 0x75 // DESFire
-                                              || p->ats[1] == 0x78      // ISO
+                                              //|| p->ats[1] == 0x78      // ISO
        ))
    {                            // We have cards, check in field still
       buf[0] = 6;               // Test 6 Attention Request Test or ISO/IEC14443-4 card presence detection
