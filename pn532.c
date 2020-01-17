@@ -132,7 +132,8 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
       return p;
    memset (p, 0, sizeof (*p));
    p->uart = uart;
-   p->mutex = xSemaphoreCreateMutex ();
+   p->mutex = xSemaphoreCreateBinary ();
+   xSemaphoreGive(p->mutex);
    // Init UART
    uart_config_t uart_config = {
       .baud_rate = 115200,
