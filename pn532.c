@@ -7,10 +7,10 @@ static const char TAG[] = "PN532";
 #include <driver/uart.h>
 #include <driver/gpio.h>
 
-// TODO Kconfig
+// TODO Kconfig for these maybe?
 //#define       HEXLOG ESP_LOG_INFO
 #define	RX_BUF	280
-#define	TX_BUF	0
+#define	TX_BUF	UART_FIFO_LEN+1
 
 struct pn532_s
 {
@@ -111,13 +111,21 @@ uart_preamble (pn532_t * p, int ms)
 }
 
 void *
-pn532_end (pn532_t * p)
-{                               // Close
+pn532_destroy (pn532_t * p)
+{                               // Close and uninstall
    if (p)
    {
       uart_driver_delete (p->uart);
       free (p);
    }
+   return NULL;
+}
+
+void *
+pn532_end (pn532_t * p)
+{                               // Close (don't uninstall)
+   if (p)
+      free (p);
    return NULL;
 }
 
@@ -135,6 +143,7 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
    p->uart = uart;
    p->mutex = xSemaphoreCreateBinary ();
    xSemaphoreGive (p->mutex);
+   esp_err_t err = 0;
    {                            // Init UART
       uart_config_t uart_config = {
          .baud_rate = 115200,
@@ -143,25 +152,25 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
          .stop_bits = UART_STOP_BITS_1,
          .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
       };
-      if (uart_is_driver_installed (uart))
-         uart_driver_delete (uart);
-      esp_err_t err;
-      if ((err = uart_param_config (uart, &uart_config))        //
-          || (err = uart_set_pin (uart, tx, rx, -1, -1))        //
-          || (err = uart_driver_install (uart, RX_BUF, TX_BUF, 0, NULL, 0))     //
-         )
+      if (!err)
+         err = uart_param_config (uart, &uart_config);
+      if (!err)
+         err = uart_set_pin (uart, tx, rx, -1, -1);
+      if (!err && !uart_is_driver_installed (uart))
+         err = uart_driver_install (uart, RX_BUF, TX_BUF, 0, NULL, 0);
+      if (err)
       {
          ESP_LOGE (TAG, "UART fail %s", esp_err_to_name (err));
-         free (p);
-         return NULL;
+         return pn532_end (p);
       }
-      ESP_LOGD (TAG, "UART %d Tx %d Rx %d", uart, tx, rx);
-      gpio_set_drive_capability (tx, GPIO_DRIVE_CAP_3); // Oomph?
    }
-   uint8_t buf[8];
+   ESP_LOGD (TAG, "UART %d Tx %d Rx %d", uart, tx, rx);
+   gpio_set_drive_capability (tx, GPIO_DRIVE_CAP_3);    // Oomph?
+   int n;
+   uint8_t buf[8] = { };
+   uart_tx (p, buf, 1);
    // Set up PN532 (SAM first as in vLowBat mode)
    // SAMConfiguration
-   int n;
    n = 0;
    buf[n++] = 0x01;             // Normal
    buf[n++] = 20;               // *50ms timeout
@@ -279,15 +288,9 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
       return -(p->lasterr = PN532_ERR_CMDPENDING);
    uint8_t buf[20],
     *b = buf;
-   *b++ = 0x55;                 // Helps ensure no issue talking to PN532
    *b++ = 0x55;
-   *b++ = 0x00;
-   *b++ = 0x00;
-   *b++ = 0x00;
-   *b++ = 0x00;
-   *b++ = 0x00;
-   *b++ = 0x00;
-   *b++ = 0x00;
+   *b++ = 0x55;
+   *b++ = 0x55;
    *b++ = 0x00;                 // Preamble
    *b++ = 0x00;                 // Start 1
    *b++ = 0xFF;                 // Start 2
@@ -311,7 +314,7 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
       sum += data1[l];
    for (l = 0; l < len2; l++)
       sum += data2[l];
-   //uart_flush_input (p->uart);
+   uart_flush_input (p->uart);
    // Send data
    uart_tx (p, buf, b - buf);
    if (len1)
@@ -321,9 +324,7 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
    buf[0] = -sum;               // Checksum
    buf[1] = 0x00;               // Postamble
    uart_tx (p, buf, 2);
-#if TX_BUF!=0
-   uart_wait_tx_done (p->uart, 100 / portTICK_PERIOD_MS);       // if tx buffer not 0, allows timeout for preamble to start at right time
-#endif
+   uart_wait_tx_done (p->uart, 100 / portTICK_PERIOD_MS);
    // Get ACK and check it
    l = uart_preamble (p, 10);
    if (l < 2)
@@ -463,7 +464,7 @@ int
 pn532_dx (void *pv, unsigned int len, uint8_t * data, unsigned int max, const char **strerr)
 {                               // Card access function - sends to card starting CMD byte, and receives reply in to same buffer, starting status byte, returns len
    if (strerr)
-      *strerr = NULL;
+      *strerr = "No error";
    pn532_t *p = pv;
    if (!p)
       return -PN532_ERR_NULL;
