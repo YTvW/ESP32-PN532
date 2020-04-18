@@ -9,6 +9,8 @@ static const char TAG[] = "PN532";
 
 // TODO Kconfig
 //#define       HEXLOG ESP_LOG_INFO
+#define	RX_BUF	280
+#define	TX_BUF	0
 
 struct pn532_s
 {
@@ -141,10 +143,12 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
          .stop_bits = UART_STOP_BITS_1,
          .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
       };
+      if (uart_is_driver_installed (uart))
+         uart_driver_delete (uart);
       esp_err_t err;
       if ((err = uart_param_config (uart, &uart_config))        //
           || (err = uart_set_pin (uart, tx, rx, -1, -1))        //
-          || (err = uart_driver_install (uart, 280, 0, 0, NULL, 0))     //
+          || (err = uart_driver_install (uart, RX_BUF, TX_BUF, 0, NULL, 0))     //
          )
       {
          ESP_LOGE (TAG, "UART fail %s", esp_err_to_name (err));
@@ -164,7 +168,7 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
    buf[n++] = 0x01;             // Use IRQ
    if (pn532_tx (p, 0x14, 0, NULL, n, buf) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
    {                            // Again
-      uart_rx (p, buf, sizeof (buf), 100); // Wait long enough for command response timeout before we try again
+      uart_rx (p, buf, sizeof (buf), 100);      // Wait long enough for command response timeout before we try again
       // SAMConfiguration
       n = 0;
       buf[n++] = 0x01;          // Normal
@@ -277,10 +281,13 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
     *b = buf;
    *b++ = 0x55;                 // Helps ensure no issue talking to PN532
    *b++ = 0x55;
-   *b++ = 0x55;
-   *b++ = 0x55;
-   *b++ = 0x55;
-   *b++ = 0x55;
+   *b++ = 0x00;
+   *b++ = 0x00;
+   *b++ = 0x00;
+   *b++ = 0x00;
+   *b++ = 0x00;
+   *b++ = 0x00;
+   *b++ = 0x00;
    *b++ = 0x00;                 // Preamble
    *b++ = 0x00;                 // Start 1
    *b++ = 0xFF;                 // Start 2
@@ -304,8 +311,8 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
       sum += data1[l];
    for (l = 0; l < len2; l++)
       sum += data2[l];
+   //uart_flush_input (p->uart);
    // Send data
-   uart_flush_input (p->uart);
    uart_tx (p, buf, b - buf);
    if (len1)
       uart_tx (p, data1, len1);
@@ -314,7 +321,9 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
    buf[0] = -sum;               // Checksum
    buf[1] = 0x00;               // Postamble
    uart_tx (p, buf, 2);
-   uart_wait_tx_done (p->uart, 100 / portTICK_PERIOD_MS);
+#if TX_BUF!=0
+   uart_wait_tx_done (p->uart, 100 / portTICK_PERIOD_MS);       // if tx buffer not 0, allows timeout for preamble to start at right time
+#endif
    // Get ACK and check it
    l = uart_preamble (p, 10);
    if (l < 2)
