@@ -87,7 +87,6 @@ uart_tx (pn532_t * p, const uint8_t * src, size_t size)
    if (l != size)
       ESP_LOGI (TAG, "Tx %d/%d", l, size);
 #endif
-   uart_wait_tx_done (p->uart, 100 / portTICK_PERIOD_MS);
    return l;
 }
 
@@ -133,27 +132,28 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
    memset (p, 0, sizeof (*p));
    p->uart = uart;
    p->mutex = xSemaphoreCreateBinary ();
-   xSemaphoreGive(p->mutex);
-   // Init UART
-   uart_config_t uart_config = {
-      .baud_rate = 115200,
-      .data_bits = UART_DATA_8_BITS,
-      .parity = UART_PARITY_DISABLE,
-      .stop_bits = UART_STOP_BITS_1,
-      .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-   };
-   esp_err_t err;
-   if ((err = uart_param_config (uart, &uart_config))   //
-       || (err = uart_set_pin (uart, tx, rx, -1, -1))   //
-       || (err = uart_driver_install (uart, 280, 0, 0, NULL, 0))        //
-      )
-   {
-      ESP_LOGE (TAG, "UART fail %s", esp_err_to_name (err));
-      free (p);
-      return NULL;
+   xSemaphoreGive (p->mutex);
+   {                            // Init UART
+      uart_config_t uart_config = {
+         .baud_rate = 115200,
+         .data_bits = UART_DATA_8_BITS,
+         .parity = UART_PARITY_DISABLE,
+         .stop_bits = UART_STOP_BITS_1,
+         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+      };
+      esp_err_t err;
+      if ((err = uart_param_config (uart, &uart_config))        //
+          || (err = uart_set_pin (uart, tx, rx, -1, -1))        //
+          || (err = uart_driver_install (uart, 280, 0, 0, NULL, 0))     //
+         )
+      {
+         ESP_LOGE (TAG, "UART fail %s", esp_err_to_name (err));
+         free (p);
+         return NULL;
+      }
+      ESP_LOGD (TAG, "UART %d Tx %d Rx %d", uart, tx, rx);
+      gpio_set_drive_capability (tx, GPIO_DRIVE_CAP_3); // Oomph?
    }
-   ESP_LOGD (TAG, "PN532 UART %d Tx %d Rx %d", uart, tx, rx);
-   gpio_set_drive_capability (tx, GPIO_DRIVE_CAP_3);    // Oomph?
    uint8_t buf[8];
    // Set up PN532 (SAM first as in vLowBat mode)
    // SAMConfiguration
@@ -164,17 +164,24 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
    buf[n++] = 0x01;             // Use IRQ
    if (pn532_tx (p, 0x14, 0, NULL, n, buf) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
    {                            // Again
+      uart_rx (p, buf, sizeof (buf), 100); // Wait long enough for command response timeout before we try again
       // SAMConfiguration
       n = 0;
       buf[n++] = 0x01;          // Normal
       buf[n++] = 20;            // *50ms timeout
       buf[n++] = 0x01;          // Use IRQ
       if (pn532_tx (p, 0x14, 0, NULL, n, buf) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
+      {
+         ESP_LOGE (TAG, "SAMConfiguration fail %s", pn532_err_to_name (pn532_lasterr (p)));
          return pn532_end (p);
+      }
    }
    // GetFirmwareVersion
    if (pn532_tx (p, 0x02, 0, NULL, 0, NULL) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
+   {
+      ESP_LOGE (TAG, "GetFirmwareVersion fail %s", pn532_err_to_name (pn532_lasterr (p)));
       return pn532_end (p);
+   }
    //uint32_t ver = (buf[0] << 24) + (buf[1] << 16) + (buf[2] << 8) + buf[3];
    // RFConfiguration
    n = 0;
@@ -183,7 +190,10 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
    buf[n++] = 0x01;             // MxRtyPSL (default = 0x01)
    buf[n++] = 0x01;             // MxRtyPassiveActivation
    if (pn532_tx (p, 0x32, 0, NULL, n, buf) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
+   {
+      ESP_LOGE (TAG, "RFConfiguration fail %s", pn532_err_to_name (pn532_lasterr (p)));
       return pn532_end (p);
+   }
    // WriteRegister
    n = 0;
    if (outputs & 0x3F)
@@ -205,13 +215,19 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
       buf[n++] = 0xFF;          // All high
    }
    if (n && (pn532_tx (p, 0x08, 0, NULL, n, buf) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0))
+   {
+      ESP_LOGE (TAG, "WriteRegister fail %s", pn532_err_to_name (pn532_lasterr (p)));
       return pn532_end (p);
+   }
    // RFConfiguration
    n = 0;
    buf[n++] = 0x04;             // MaxRtyCOM
    buf[n++] = 1;                // Retries (default 0)
    if (pn532_tx (p, 0x32, 0, NULL, n, buf) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
+   {
+      ESP_LOGE (TAG, "RFConfiguration fail %s", pn532_err_to_name (pn532_lasterr (p)));
       return pn532_end (p);
+   }
    // RFConfiguration
    n = 0;
    buf[n++] = 0x02;             // Various timings (100*2^(n-1))us
@@ -219,7 +235,10 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
    buf[n++] = 0x0B;             // Default (102.4 ms)
    buf[n++] = 0x0A;             // Default is 0x0A (51.2 ms)
    if (pn532_tx (p, 0x32, 0, NULL, n, buf) < 0 || pn532_rx (p, 0, NULL, sizeof (buf), buf) < 0)
+   {
+      ESP_LOGE (TAG, "RFConfiguration fail %s", pn532_err_to_name (pn532_lasterr (p)));
       return pn532_end (p);
+   }
    return p;
 }
 
@@ -260,6 +279,8 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
    *b++ = 0x55;
    *b++ = 0x55;
    *b++ = 0x55;
+   *b++ = 0x55;
+   *b++ = 0x55;
    *b++ = 0x00;                 // Preamble
    *b++ = 0x00;                 // Start 1
    *b++ = 0xFF;                 // Start 2
@@ -293,6 +314,7 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
    buf[0] = -sum;               // Checksum
    buf[1] = 0x00;               // Postamble
    uart_tx (p, buf, 2);
+   uart_wait_tx_done (p->uart, 100 / portTICK_PERIOD_MS);
    // Get ACK and check it
    l = uart_preamble (p, 10);
    if (l < 2)
