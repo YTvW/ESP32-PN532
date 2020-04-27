@@ -127,10 +127,9 @@ pn532_end (pn532_t * p)
       return NULL;
 #if 1
    // TODO messing about to try and clear UART issues
-   uint8_t x = 0x55;
-   while (uart_read_bytes (p->uart, &x, 1, portTICK_PERIOD_MS / 10) > 0);
-   uart_write_bytes (p->uart, (char *) &x, 1);
-   uart_write_bytes (p->uart, (char *) &x, 1);
+   uart_flush_input (p->uart);
+   char x[] = { 0x55, 0x55, 0x55 };
+   uart_write_bytes (p->uart, x, sizeof (x));
    uart_driver_delete (p->uart);        // TODO test
 #endif
    free (p);
@@ -165,10 +164,7 @@ pn532_init (int8_t uart, int8_t tx, int8_t rx, uint8_t outputs)
       if (!err)
          err = uart_set_pin (uart, tx, rx, -1, -1);
       if (!err && !uart_is_driver_installed (uart))
-      {
          err = uart_driver_install (uart, RX_BUF, TX_BUF, 0, NULL, 0);
-         usleep (100);
-      }
       if (err)
       {
          ESP_LOGE (TAG, "UART fail %s", esp_err_to_name (err));
