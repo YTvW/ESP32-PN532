@@ -291,6 +291,7 @@ pn532_tx_mutex (pn532_t * p, uint8_t cmd, int len1, uint8_t * data1, int len2, u
    *b++ = 0x55;
    *b++ = 0x55;
    *b++ = 0x55;
+   *b++ = 0x55;
    *b++ = 0x00;                 // Preamble
    *b++ = 0x00;                 // Start 1
    *b++ = 0xFF;                 // Start 2
