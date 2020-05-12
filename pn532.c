@@ -370,7 +370,7 @@ pn532_rx_mutex (pn532_t * p, int max1, uint8_t * data1, int max2, uint8_t * data
    if (l < 2)
       return -(p->lasterr = PN532_ERR_TIMEOUT);
    uint8_t buf[9];
-   l = uart_rx (p, buf, 4, 100);
+   l = uart_rx (p, buf, 4, 10);
    if (l < 4)
       return -(p->lasterr = PN532_ERR_TIMEOUT);
    int len = 0;
